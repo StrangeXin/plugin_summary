@@ -19,33 +19,7 @@ from plugins import *
 from common.log import logger
 from common import const
 import sqlite3
-from chatgpt_tool_hub.chains.llm import LLMChain
-from chatgpt_tool_hub.models import build_model_params
-from chatgpt_tool_hub.models.model_factory import ModelFactory
-from chatgpt_tool_hub.prompts import PromptTemplate
-TRANSLATE_PROMPT = '''
-You are now the following python function: 
-```# {{translate text to commands}}"
-        def translate_text(text: str) -> str:
-```
-Only respond with your `return` value, Don't reply anything else.
 
-Commands:
-{{Summary chat logs}}: "summary", args: {{("duration_in_seconds"): <integer>, ("count"): <integer>}}
-{{Do Nothing}}:"do_nothing",  args:  {{}}
-
-argument in brackets means optional argument.
-
-You should only respond in JSON format as described below.
-Response Format: 
-{{
-    "name": "command name", 
-    "args": {{"arg name": "value"}}
-}}
-Ensure the response can be parsed by Python json.loads.
-
-Input: {input}
-'''
 def find_json(json_string):
     json_pattern = re.compile(r"\{[\s\S]*\}")
     json_match = json_pattern.search(json_string)
@@ -65,6 +39,10 @@ def find_json(json_string):
 class Summary(Plugin):
     def __init__(self):
         super().__init__()
+
+        self.config = super().load_config()
+        if not self.config:
+            self.config = self._load_config_template()
         
         curdir = os.path.dirname(__file__)
         db_path = os.path.join(curdir, "chat.db")
@@ -90,9 +68,10 @@ class Summary(Plugin):
 
         self.handlers[Event.ON_HANDLE_CONTEXT] = self.on_handle_context
         self.handlers[Event.ON_RECEIVE_MESSAGE] = self.on_receive_message
-        self.open_ai_api_base = conf().get("open_ai_api_base", "https://api.openai.com/v1")
-        self.open_ai_api_key = conf().get("open_ai_api_key", "")
-        self.open_ai_model = conf().get("open_ai_model", "gpt-3.5-turbo")
+
+        self.open_ai_api_base = self.config.get("open_ai_api_base", "https://api.openai.com/v1")
+        self.open_ai_api_key = self.config.get("open_ai_api_key", "")
+        self.open_ai_model = self.config.get("open_ai_model", "gpt-3.5-turbo")
         logger.info("[Summary] inited")
 
     def _insert_record(self, session_id, msg_id, user, content, msg_type, timestamp, is_triggered = 0):
@@ -139,21 +118,6 @@ class Summary(Plugin):
                 is_triggered = True
 
         self._insert_record(session_id, cmsg.msg_id, username, context.content, str(context.type), cmsg.create_time, int(is_triggered))
-        # logger.debug("[Summary] {}:{} ({})" .format(username, context.content, session_id))
-
-    def _translate_text_to_commands(self, text):
-        llm = ModelFactory().create_llm_model(**build_model_params({
-            "openai_api_key": conf().get("open_ai_api_key", ""),
-            "proxy": conf().get("proxy", ""),
-        }))
-
-        prompt = PromptTemplate(
-            input_variables=["input"],
-            template=TRANSLATE_PROMPT,
-        )
-        bot = LLMChain(llm=llm, prompt=prompt)
-        content = bot.run(text)
-        return content
 
     def _get_openai_chat_url(self):
         return self.open_ai_api_base + "/chat/completions"
@@ -195,21 +159,6 @@ class Summary(Plugin):
                             logger.debug("[Summary] limit: %d" % limit)
                         except Exception as e:
                             flag = False
-                if not flag:
-                    text = content.split(trigger_prefix,maxsplit=1)[1]
-                    try:
-                        command_json = find_json(self._translate_text_to_commands(text))
-                        command = json.loads(command_json)
-                        name = command["name"]
-                        if name.lower() == "summary":
-                            limit = int(command["args"].get("count", 99))
-                            if limit < 0:
-                                limit = 299
-                            duration = int(command["args"].get("duration_in_seconds", -1))
-                            logger.debug("[Summary] limit: %d, duration: %d seconds" % (limit, duration))
-                    except Exception as e:
-                        logger.error("[Summary] translate failed: %s" % e)
-                        return
             else:
                 return
 
@@ -263,5 +212,5 @@ class Summary(Plugin):
         if not verbose:
             return help_text
         trigger_prefix = conf().get('plugin_trigger_prefix', "$")
-        help_text += f"使用方法:输入\"{trigger_prefix}总结 最近消息数量\"，我会帮助你总结聊天记录。\n例如：\"{trigger_prefix}总结 100\"，我会总结最近100条消息。\n\n你也可以直接输入\"{trigger_prefix}总结前99条信息\"或\"{trigger_prefix}总结3小时内的最近10条消息\"\n我会尽可能理解你的指令。"
+        help_text += f"使用方法:输入\"{trigger_prefix}总结 最近消息数量\"，我会帮助你总结聊天记录。\n例如：\"{trigger_prefix}总结 100\"，我会总结最近100条消息。\n\n"
         return help_text
